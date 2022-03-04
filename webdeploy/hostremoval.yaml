@@ -1,0 +1,32 @@
+---
+- hosts: webserver  
+  vars_files:
+    - ~/webdeploy/details.yml
+  connection: paramiko
+  tasks:
+    - name: Comment out the public key entry in authorized key of users in client machine
+      replace: 
+        dest: /home/{{ item.name }}/.ssh/authorized_keys
+        regexp: '^ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCsClu'
+        replace: '#ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCsClu' 
+      with_items: "{{ users }}"
+      tags: Remove-servers-from-bastion-connection
+    - name: Stop the iptables service in the client machine
+      service:   
+        name: iptables
+        state: stopped
+        enabled: no 
+    - name: Uninstall the iptables from the client machine
+      package: 
+        name: iptables-services
+        state: absent
+    - name: Stop the apache/http service in the client machine
+      service: 
+        name: httpd
+        state: stopped 
+        enabled: no 
+    - name: Uninstall the apache package from the client machine
+      package: 
+        name: httpd  
+        state: absent
+

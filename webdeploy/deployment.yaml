@@ -1,0 +1,395 @@
+---
+- hosts: bastionhost  
+  vars_files:
+    - ~/webdeploy/details.yml
+  connection: paramiko
+  tasks: 
+    - name: Clean the content in key directory of Ansible server
+      file: 
+        path: "{{ key_location }}/id_rsa.pub"
+        state: absent
+      run_once: true 
+      delegate_to: localhost
+    - name: Generate a random password for bastion host 
+      shell: python pass.py
+      delegate_to: localhost
+      tags: add_user-ruser
+    - name: Get the password file from pass file bastion host 
+      shell:  |
+          cat bastionpass 
+      register: output
+      delegate_to: localhost
+      tags: add_user-ruser
+    - debug:
+        var: output.stdout
+      delegate_to: localhost
+      tags: add_user-ruser
+    - name: Generate the Encrypted password for bastion host 
+      shell: |
+        /usr/bin/openssl passwd {{ output.stdout }}
+      register: encrout
+      delegate_to: localhost 
+      tags: add_user-ruser
+    - debug:
+        var: encrout.stdout
+      delegate_to: localhost 
+      tags: add_user-ruser
+    - name: create user in the bastionhost machine
+      user: 
+        name: "{{ item.name }}"
+        uid: "{{ item.uid }}"
+        comment: "{{ item.comment }}"
+        password: "{{ encrout.stdout }}"
+        update_password: on_create
+        createhome: yes 
+      with_items: "{{ rusers }}"
+      tags: add_user-ruser
+    - name: Generate SSH key for Remote user in bastionhost machine 
+      user: 
+        name: "{{ item.name }}"
+        generate_ssh_key: yes
+        ssh_key_file: .ssh/id_rsa
+      with_items: "{{ rusers }}"
+      tags: ssh-keygen-rusers
+    - name: Transfer the Remote user Public key from Bastion host to Ansible server.
+      fetch: 
+        src: /home/{{ item.name }}/.ssh/id_rsa.pub
+        dest: "{{ key_location }}"
+        flat: yes
+      with_items: "{{ rusers}}"
+      tags: Transfer-Pubkey-Bastion-ansible
+- hosts: webserver 
+  vars_files: 
+    - ~/webdeploy/details.yml
+  connection: paramiko
+  tasks: 
+    - name: Generate a random password for client machine
+      shell: python webpass.py 
+      delegate_to: localhost
+      tags: add_user
+    - name: Get the password file from pass file for client machine
+      shell:  |
+          cat webserverpass
+      register: output1
+      delegate_to: localhost
+      tags: add_user
+    - debug:
+        var: output1.stdout
+      delegate_to: localhost
+      tags: add_user
+    - name: Generate the Encrypted password for client machine
+      shell: |
+        /usr/bin/openssl passwd {{ output1.stdout }}
+      register: encrout1
+      delegate_to: localhost 
+      tags: add_user
+    - debug:
+        var: encrout1.stdout
+      delegate_to: localhost 
+      tags: add_user
+    - name: create user in the client machine
+      user: 
+        name: "{{ item.name }}"
+        uid: "{{ item.uid }}"
+        comment: "{{ item.comment }}"
+        password: "{{ encrout1.stdout }}"
+        update_password: on_create
+        createhome: yes 
+      with_items: "{{ users }}"
+      tags: add_user
+    - name: create .ssh directory in client machine
+      file: 
+        path: /home/{{ item.name }}/.ssh
+        state: directory
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: 0700
+      with_items: "{{ users }}"
+      tags: ssh-keyless-setup-clients
+    - name: Transfer the Bastion host user Public key to client machine
+      copy: 
+        src: "{{ key_location }}/id_rsa.pub"
+        dest: /home/{{ item.name }}/.ssh/authorized_keys
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: 0640
+      with_items: "{{ users }}"
+      tags: ssh-keyless-setup-clients
+    - name: set the customise the bashrc profile of the created users in Clients
+      lineinfile: 
+        path: /home/{{ item.name }}/.bashrc
+        regexp: '^pav'
+        line: 'PS1="\u@\h \w >\s → \$ ";export PATH="$PATH:/usr/local/bin/:/usr/sbin/:/usr/bin/"'
+      with_items: "{{ users }}"
+      tags: bashrc_setup 
+    - name: Install Apache/http package in the client machine
+      package: 
+        name: httpd
+        state: present
+      tags: Install-apache-Client-machine
+    - name: Create a sample test index file in the client machine
+      file: 
+        path: /var/www/html/index.html
+        state: file 
+      tags: Create-index-html-Client-machine
+    - name: Create a sample HTML file in the client machine
+      shell: |
+           echo "Hello Jithin , how are you " > /var/www/html/index.html
+      tags: Create-index-html-Client-machine
+    - name: Start the Apache/http service in the Client machine
+      service: 
+        name: httpd
+        state: started 
+        enabled: true
+      tags: Start-apache-Client-machine
+    - name: check the apache connect to the web page and it returns a status 200
+      uri: 
+        url: http://{{ inventory_hostname }}/
+      register: statusoutput
+      tags: web-status-check 
+    - debug: 
+        var: statusoutput.status
+      tags: web-status-check
+    - name: Stop the Firewalld  Serice in the Client Machine 
+      systemd: 
+        name: firewalld
+        state: stopped
+        enabled: no
+        masked: yes 
+      tags: stop-firewall-service
+    - name: Install Iptables package in the client Machine
+      package: 
+        name: iptables-services
+        state: present
+      tags: install-iptables-pkg
+#    - name: Add IPtable Rules as per the client Requirement in the client Machine
+#      shell: |
+#        iptables -I INPUT -p tcp --dport 22 -j ACCEPT
+#        iptables --policy INPUT DROP
+#        iptables --policy FORWARD DROP
+#        iptables -I INPUT -i eth0 -p tcp --dport 22 -m state --state NEW,ESTABLISHED -j ACCEPT
+#        iptables -I OUTPUT -o eth0 -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT
+#        iptables -I INPUT -i eth0 -p tcp --dport 53 -m state --state NEW,ESTABLISHED -s 1.0.0.1 -d "{{ inventory_hostname }}" -j ACCEPT
+#        iptables -I INPUT -i eth0 -p udp --dport 53 -m state --state NEW,ESTABLISHED -s 1.0.0.1 -d "{{ inventory_hostname }}" -j ACCEPT
+#        iptables -I OUTPUT -o eth0 -p tcp --sport 53 -m state --state ESTABLISHED -s "{{ inventory_hostname }}" -d 1.0.0.1 -j ACCEPT
+#        iptables -I OUTPUT -o eth0 -p udp --sport 53 -m state --state ESTABLISHED -s "{{ inventory_hostname }}" -d 1.0.0.1 -j ACCEPT
+#      tags: iptable-rule-addition
+    - name: Inbound Allow port 22 to from anywhere
+      iptables: 
+        chain: INPUT
+        protocol: tcp 
+        destination_port: 22
+        jump: ACCEPT 
+        comment: Inbound Allow port 22 to from anywhere
+        state: present
+      become: yes 
+      tags: iptable-rule-addition
+    - name: Inbound Allow tcp port 53 from 1.0.0.1
+      iptables: 
+        chain: INPUT
+        protocol: tcp 
+        destination_port: 53
+        jump: ACCEPT 
+        in_interface: eth0
+        match: state 
+        state: present
+        ctstate: NEW,ESTABLISHED
+        source: 1.0.0.1
+        destination: "{{ inventory_hostname }}"
+        comment: Inbound Allow tcp port 53 from 1.0.0.1 
+      become: yes 
+      tags: iptable-rule-addition
+    - name: Inbound Allow udp port 53 from 1.0.0.1
+      iptables: 
+        chain: INPUT
+        protocol: udp 
+        destination_port: 53
+        jump: ACCEPT 
+        in_interface: eth0
+        match: state
+        state: present
+        ctstate: NEW,ESTABLISHED
+        source: 1.0.0.1
+        destination: "{{ inventory_hostname }}"
+        comment: Inbound Allow udp port 53 from 1.0.0.1 
+      become: yes 
+      tags: iptable-rule-addition
+    - name: Outbound Allow tcp port 53 for 1.0.0.1
+      iptables: 
+        chain: OUTPUT
+        protocol: tcp 
+        source_port: 53
+        jump: ACCEPT 
+        out_interface: eth0
+        match: state
+        state: present
+        ctstate: ESTABLISHED
+        source: "{{ inventory_hostname }}" 
+        destination: 1.0.0.1 
+        comment: Outbound Allow tcp port 53 for 1.0.0.1 
+      become: yes 
+      tags: iptable-rule-addition
+    - name: Outbound Allow udp port 53 for 1.0.0.1
+      iptables: 
+        chain: OUTPUT
+        protocol: udp 
+        source_port: 53
+        jump: ACCEPT 
+        out_interface: eth0
+        match: state
+        state: present
+        ctstate: ESTABLISHED
+        source: "{{ inventory_hostname }}" 
+        destination: 1.0.0.1 
+        comment: Outbound Allow udp port 53 for 1.0.0.1 
+      become: yes 
+      tags: iptable-rule-addition
+    - name: Inbound Allow tcp port 53 from 1.1.1.1 
+      iptables: 
+        chain: INPUT
+        protocol: tcp 
+        destination_port: 53
+        jump: ACCEPT 
+        in_interface: eth0
+        match: state 
+        state: present
+        ctstate: NEW,ESTABLISHED
+        source: 1.1.1.1 
+        destination: "{{ inventory_hostname }}"
+        comment: Inbound Allow tcp port 53 from 1.1.1.1 
+      become: yes 
+      tags: iptable-rule-addition
+    - name: Inbound Allow udp port 53 from 1.1.1.1 
+      iptables: 
+        chain: INPUT
+        protocol: udp 
+        destination_port: 53
+        jump: ACCEPT 
+        in_interface: eth0
+        match: state
+        state: present
+        ctstate: NEW,ESTABLISHED
+        source: 1.1.1.1 
+        destination: "{{ inventory_hostname }}"
+        comment: Inbound Allow udp port 53 from 1.1.1.1 
+      become: yes 
+      tags: iptable-rule-addition
+    - name: Outbound Allow tcp port 53 for 1.1.1.1 
+      iptables: 
+        chain: OUTPUT
+        protocol: tcp 
+        source_port: 53
+        jump: ACCEPT 
+        out_interface: eth0
+        match: state
+        state: present
+        ctstate: ESTABLISHED
+        source: "{{ inventory_hostname }}" 
+        destination: 1.1.1.1 
+        comment: Outbound Allow tcp port 53 for 1.1.1.1 
+      become: yes 
+      tags: iptable-rule-addition
+    - name: Outbound Allow udp port 53 for 1.1.1.1
+      iptables: 
+        chain: OUTPUT
+        protocol: udp 
+        source_port: 53
+        jump: ACCEPT 
+        out_interface: eth0
+        match: state
+        state: present
+        ctstate: ESTABLISHED
+        source: "{{ inventory_hostname }}" 
+        destination: 1.1.1.1 
+        comment: Outbound Allow udp port 53 for 1.1.1.1 
+      become: yes 
+      tags: iptable-rule-addition
+    - name: Inbound Allow tcp port 80,443 from anywhere 
+      iptables: 
+        chain: INPUT
+        protocol: tcp 
+        destination_port: "{{ item }}" 
+        jump: ACCEPT 
+        match: state
+        state: present
+        ctstate: NEW,ESTABLISHED
+        comment: Inbound Allow tcp port 80,443 from anywhere 
+      become: yes 
+      with_items: ['80','443']
+      tags: iptable-rule-addition
+    - name: Outbound Allow tcp port 80,443 to anywhere 
+      iptables: 
+        chain: OUTPUT
+        protocol: tcp 
+        source_port: "{{ item }}" 
+        jump: ACCEPT 
+        match: state
+        state: present
+        ctstate: ESTABLISHED
+        comment: Outbound Allow tcp port 80,443 to anywhere  
+      become: yes 
+      with_items: ['80','443']
+      tags: iptable-rule-addition
+    - name: Inbound Allow tcp port 22 from anywhere 
+      iptables: 
+        chain: INPUT
+        protocol: tcp 
+        destination_port: 22 
+        jump: ACCEPT 
+        match: state
+        state: present
+        ctstate: NEW,ESTABLISHED
+        comment: Inbound Allow tcp port 22 from anywhere 
+      become: yes 
+      tags: iptable-rule-addition
+    - name: Outbound Allow tcp port 22 to anywhere 
+      iptables: 
+        chain: OUTPUT
+        protocol: tcp 
+        source_port: 22 
+        jump: ACCEPT 
+        match: state
+        state: present
+        ctstate: ESTABLISHED
+        comment: Outbound Allow port 53 to anywhere  
+      become: yes 
+      tags: iptable-rule-addition
+    - name: Change INPUT Chain Policy to DROP
+      iptables: 
+        chain: INPUT
+        policy: DROP
+        state: present
+      become: yes 
+      tags: iptables-policy-modification
+    - name: Change FORWARD Chain Policy to DROP
+      iptables: 
+        chain: FORWARD 
+        policy: DROP
+        state: present
+      become: yes 
+      tags: iptables-policy-modification
+    - name: Change OUTPUT Chain Policy to DROP
+      iptables: 
+        chain: OUTPUT 
+        policy: DROP
+        state: present
+      become: yes 
+      tags: iptables-policy-modification-output
+    - name: Take the backup iptables config file
+      copy: 
+        src: /etc/sysconfig/iptables
+        dest: /etc/sysconfig/iptables-backup-{{ansible_date_time.date}}-{{ ansible_date_time.time }}
+        remote_src: yes
+        backup: yes 
+        mode: 0600
+      tags: iptables-config-backup
+    - name: Save the Iptables rules in configuration file
+      shell: |
+        iptables-save > /etc/sysconfig/iptables 
+      tags: iptables-rules-save
+    - name: Ensure Iptables service started in the client machine
+      service: 
+        name: iptables.service
+        enabled: true
+        state: started 
+
