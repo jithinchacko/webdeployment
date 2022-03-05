@@ -7,8 +7,8 @@
     - name: Comment out the public key entry in authorized key of users in client machine
       replace: 
         dest: /home/{{ item.name }}/.ssh/authorized_keys
-        regexp: '^ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCsClu'
-        replace: '#ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCsClu' 
+        regexp: '^ssh-rsa AAAAB3Nza'
+        replace: '#ssh-rsa AAAAB3Nza' 
       with_items: "{{ users }}"
       tags: Remove-servers-from-bastion-connection
     - name: Stop the iptables service in the client machine
